@@ -14,8 +14,8 @@ and writes the following metadata to the `Extra` field:
 | Key | Source | Example |
 |---|---|---|
 | `medium` | OpenAlex / PubMed Central | `Gold Open Access` |
-| `topics` | OpenAlex | `Parkinson disease; PINK1; Mitophagy` |
-| `openalex-id` | OpenAlex | `https://openalex.org/W2345678901` |
+| `topics` | OpenAlex | `Parkinson's disease; PINK1; Mitophagy` |
+| `openalex-id` | OpenAlex | `https://openalex.org/W12345678` |
 | `citation-count` | Semantic Scholar | `312` |
 | `influential-citations` | Semantic Scholar | `18` |
 
@@ -45,4 +45,4 @@ OA status is determined using the following priority order:
 - R ≥ 4.4.0
 - [`pacman`](https://cran.r-project.org/package=pacman) for dependency management
 
-Dependencies are installed and loaded automatically on first run.
+Generate a Zotero API key on the Zotero website. Add it and your user or group id to the respective constants in the script.
