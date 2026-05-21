@@ -26,19 +26,17 @@ ensuring citation counts and OA status stay up to date.
 
 OA status is determined using the following priority order:
 
-1. **OpenAlex `oa_status`** — gold, green, hybrid, or bronze are used directly
-2. **PubMed Central fallback** — if OpenAlex returns `closed` but a PMCID is
+1. **OpenAlex `oa_status`** - diamond, gold, and hybrid are used directly
+2. **PubMed Central fallback** - if OpenAlex returns `closed`,`green`, or `bronze` and a PMCID is
    stored in Zotero, the article is reclassified as `Green Open Access`
-3. **`is_oa` inconsistency fallback** — if OpenAlex reports `is_oa: true` but
-   `oa_status: closed` (a possible OpenAlex data inconsistency), the article is
-   labelled `Open Access (unclassified)`
-4. **`Closed Access`** — written when no free version is detected
+3. **Inconsistencies and no PMCID** - In case of inconsistencies or a missing PMCID, entries are labelled defensively as `Open Access (unclassified)` and won't qualify as OA by default.
+4. **`Closed Access`** - written when no free version is detected via OpenAlex & PubMed
 
 > **Note:** OA classification, particularly for `bronze` and `closed`, is not
 > always accurate. Bronze articles are free to read without a formal license and
-> may become paywalled without notice. See the
-> [OpenAlex documentation](https://developers.openalex.org/) for details on their
-> methodology.
+> may become paywalled without notice, which is the reason for this strict classification.
+> See the [OpenAlex documentation](https://developers.openalex.org/) for details
+> on their methodology.
 
 ## Requirements
 

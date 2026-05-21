@@ -1,7 +1,7 @@
 if (!require("pacman")) {
   install.packages("pacman")
 }
-pacman::p_load(httr2, jsonlite)
+pacman::p_load(httr2, jsonlite, tidyverse)
 
 ZOTERO_API_KEY <- "PUT YOUR ZOTERO API KEY HERE"
 ZOTERO_BASE <- "https://api.zotero.org/users/PUT YOUR USER ID HERE"
@@ -11,8 +11,9 @@ MAILTO <- "your-email-for-better-rate-limits@uni-xyz.com"
 # OA label map
 oa_label <- function(status) {
   switch(status,
-    "gold"   = "Gold Open Access",
-    "green"  = "Green Open Access",
+    "diamond" = "Diamond Open Access",
+    "gold" = "Gold Open Access",
+    "green" = "Green Open Access",
     "hybrid" = "Hybrid Open Access",
     "bronze" = "Bronze Open Access",
     "closed" = "Closed Access",
@@ -20,113 +21,136 @@ oa_label <- function(status) {
   )
 }
 
+strip_doi_prefix <- function(doi) gsub("https://doi.org/", "", doi, fixed = TRUE)
+
+resolve_oa_medium <- function(status, is_oa, pmcid = "") {
+  has_pmcid <- nzchar(pmcid)
+  raw <- oa_label(status)
+
+  case_when(
+    # Green OA: trustworthy with a PMCID; otherwise flag as unclassified
+    raw == "Green Open Access" & !has_pmcid ~ "Open Access (unclassified)",
+    # Closed/Bronze upgrade to Green with available PMCID
+    raw %in% c("Closed Access", "Bronze Open Access") & has_pmcid ~ "Green Open Access",
+    # Closed/Bronze with is_oa=TRUE but no PMCID — may be OA but unclear where
+    raw %in% c("Closed Access", "Bronze Open Access") & isTRUE(is_oa) ~ "Open Access (unclassified)",
+    # Others pass through as-is
+    .default = raw
+  )
+}
 # Zotero: fetch all items with pagination
 get_zotero_items <- function() {
-  all_items <- list()
-  start <- 0
   limit <- 100
 
-  repeat {
+  first_resp <- request(ZOTERO_BASE) |>
+    req_url_path_append("items") |>
+    req_url_query(format = "json", limit = limit, start = 0) |>
+    req_headers("Zotero-API-Key" = ZOTERO_API_KEY) |>
+    req_perform()
+
+  total <- as.integer(resp_header(first_resp, "Total-Results"))
+  all_items <- vector("list", total)
+  batch <- resp_body_json(first_resp, simplifyVector = FALSE)
+  all_items[seq_along(batch)] <- batch
+
+  starts <- if (total > limit) seq(limit, total - 1, by = limit) else integer(0)
+  for (start in starts) {
     resp <- request(ZOTERO_BASE) |>
       req_url_path_append("items") |>
       req_url_query(format = "json", limit = limit, start = start) |>
       req_headers("Zotero-API-Key" = ZOTERO_API_KEY) |>
       req_perform()
-
     batch <- resp_body_json(resp, simplifyVector = FALSE)
-    if (length(batch) == 0) break
-
-    all_items <- c(all_items, batch)
-    total <- as.integer(resp_header(resp, "Total-Results"))
-    start <- start + limit
-    if (start >= total) break
+    all_items[start + seq_along(batch)] <- batch
   }
+
   all_items
 }
-
 # OpenAlex: fetch work metadata by DOI
-get_openalex_metadata <- function(doi) {
-  doi <- gsub("https://doi.org/", "", doi, fixed = TRUE)
-  url <- paste0("https://api.openalex.org/works/https://doi.org/", doi)
+get_openalex_metadata <- function(doi, pmid = "") {
+  doi <- strip_doi_prefix(doi)
+
+  # Primary: DOI lookup
   resp <- tryCatch(
-    request(url) |>
+    request(paste0("https://api.openalex.org/works/https://doi.org/", doi)) |>
       req_url_query(mailto = MAILTO) |>
       req_perform(),
     error = function(e) NULL
   )
-  if (is.null(resp)) {
-    return(NULL)
+
+  if (!is.null(resp) && resp_status(resp) < 400) {
+    body <- resp_body_json(resp)
+    returned_doi <- strip_doi_prefix(body$doi %||% "")
+    if (tolower(returned_doi) == tolower(doi)) {
+      return(body)
+    }
+    message("  DOI mismatch in OA response, trying PMID fallback...")
   }
-  resp_body_json(resp)
+
+  # Fallback: PMID lookup
+  if (nzchar(pmid)) {
+    resp2 <- tryCatch(
+      request(paste0("https://api.openalex.org/works/pmid:", pmid)) |>
+        req_url_query(mailto = MAILTO) |>
+        req_perform(),
+      error = function(e) NULL
+    )
+    if (!is.null(resp2) && resp_status(resp2) < 400) {
+      return(resp_body_json(resp2))
+    }
+  }
+
+  NULL
 }
 
 # Semantic Scholar: fetch citation metrics by DOI
 get_s2_metadata <- function(doi) {
-  doi <- gsub("https://doi.org/", "", doi, fixed = TRUE)
-  url <- paste0("https://api.semanticscholar.org/graph/v1/paper/DOI:", doi)
+  doi <- strip_doi_prefix(doi)
   resp <- tryCatch(
-    request(url) |>
-      req_url_query(
-        fields = "citationCount,influentialCitationCount,publicationDate"
-      ) |>
+    request(paste0("https://api.semanticscholar.org/graph/v1/paper/DOI:", doi)) |>
+      req_url_query(fields = "citationCount,influentialCitationCount,publicationDate") |>
       req_perform(),
     error = function(e) NULL
   )
-  if (is.null(resp)) {
-    return(NULL)
-  }
-  resp_body_json(resp)
+  if (!is.null(resp)) resp_body_json(resp)
 }
-
 # Build Extra field content
-build_extra <- function(oa_data, s2_data, pmcid) {
-  lines <- character(0)
+build_extra <- function(oa_data, s2_data, pmcid = "") {
+  parts <- list()
 
-  # OA status
   if (!is.null(oa_data)) {
-    status <- oa_data$open_access$oa_status
-    is_oa <- oa_data$open_access$is_oa
+    medium <- resolve_oa_medium(
+      status = oa_data$open_access$oa_status,
+      is_oa  = oa_data$open_access$is_oa,
+      pmcid  = pmcid
+    )
 
-    medium <- oa_label(status)
+    oa_types <- c(
+      "Gold Open Access", "Green Open Access",
+      "Hybrid Open Access", "Diamond Open Access"
+    )
 
-    if (identical(medium, "Closed Access")) {
-      if (!is.null(pmcid) && nzchar(pmcid)) {
-        medium <- "Green Open Access"
-      } else if (!is.null(is_oa) && isTRUE(is_oa)) {
-        medium <- "Open Access (unclassified)"
-      }
-    }
-
-    lines <- c(lines, paste0("medium: ", medium))
-
-    # Topics (up to 3)
     topics <- oa_data$topics
-    if (!is.null(topics) && length(topics) > 0) {
-      topic_names <- sapply(
-        topics[seq_len(min(3, length(topics)))],
-        function(t) t$display_name
-      )
-      lines <- c(lines, paste0("topics: ", paste(topic_names, collapse = "; ")))
-    }
 
-    # OpenAlex ID
-    oalex_id <- oa_data$id
-    if (!is.null(oalex_id)) {
-      lines <- c(lines, paste0("openalex-id: ", oalex_id))
+    parts$medium <- paste0("medium: ", medium)
+    parts$annote <- if (medium %in% oa_types) "annote: OA"
+    parts$topics <- if (length(topics) > 0) {
+      paste0("topics: ", paste(map_chr(topics[seq_len(min(3, length(topics)))], "display_name"), collapse = "; "))
     }
+    parts$oalex_id <- if (!is.null(oa_data$id)) paste0("openalex-id: ", oa_data$id)
   }
 
-  # Citation counts from Semantic Scholar
   if (!is.null(s2_data)) {
-    cit <- s2_data$citationCount
-    inf <- s2_data$influentialCitationCount
-    if (!is.null(cit)) lines <- c(lines, paste0("citation-count: ", cit))
-    if (!is.null(inf)) lines <- c(lines, paste0("influential-citations: ", inf))
+    parts$citations <- if (!is.null(s2_data$citationCount)) {
+      paste0("citation-count: ", s2_data$citationCount)
+    }
+    parts$influential <- if (!is.null(s2_data$influentialCitationCount)) {
+      paste0("influential-citations: ", s2_data$influentialCitationCount)
+    }
   }
 
-  paste(lines, collapse = "\n")
+  paste(Filter(Negate(is.null), parts), collapse = "\n")
 }
-
 # Zotero: write Extra field via PATCH
 update_extra_field <- function(item_key, item_version, new_extra) {
   body <- toJSON(list(extra = new_extra), auto_unbox = TRUE)
@@ -143,28 +167,22 @@ update_extra_field <- function(item_key, item_version, new_extra) {
     req_perform()
 }
 
-# Main
-message("Fetching items from Zotero...")
-items <- get_zotero_items()
-message("Total items fetched: ", length(items))
-
-for (item in items) {
+# Helper: process and update a single item
+process_item <- function(item) {
   doi <- item$data$DOI
-  if (is.null(doi) || !nzchar(doi)) next
-
   key <- item$data$key
   version <- item$version
   pmcid <- item$data$PMCID %||% ""
+  pmid <- item$data$PMID %||% ""
 
   message("\nProcessing ", key, " — ", doi)
 
-  # Fetch from both APIs
-  oa_data <- get_openalex_metadata(doi)
+  oa_data <- get_openalex_metadata(doi, pmid)
   s2_data <- get_s2_metadata(doi)
 
   if (is.null(oa_data) && is.null(s2_data)) {
     message("  Skipping — no data returned from either API")
-    next
+    return(invisible(NULL))
   }
 
   new_extra <- build_extra(oa_data, s2_data, pmcid)
@@ -181,5 +199,14 @@ for (item in items) {
   )
 
   if (!is.null(result)) message("  OK (HTTP ", resp_status(result), ")")
-  Sys.sleep(0.2) # API rate limits
+  Sys.sleep(0.2)
 }
+
+# Main
+message("Fetching items from Zotero...")
+items <- get_zotero_items()
+message("Total items fetched: ", length(items))
+
+items |>
+  keep(\(item) !is.null(item$data$DOI) && nzchar(item$data$DOI)) |>
+  walk(process_item)
