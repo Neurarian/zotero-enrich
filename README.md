@@ -32,11 +32,17 @@ OA status is determined using the following priority order:
 3. **Inconsistencies and no PMCID** - In case of inconsistencies or a missing PMCID, entries are labelled defensively as `Open Access (unclassified)` and won't qualify as OA by default.
 4. **`Closed Access`** - written when no free version is detected via OpenAlex & PubMed
 
-> **Note:** OA classification, particularly for `bronze` and `closed`, is not
-> always accurate. Bronze articles are free to read without a formal license and
-> may become paywalled without notice, which is the reason for this strict classification.
-> See the [OpenAlex documentation](https://developers.openalex.org/) for details
-> on their methodology.
+>[!NOTE]
+>OA classification, particularly for `bronze` and `closed`, is not
+>always accurate. Bronze articles are free to read without a formal license and
+>may become paywalled without notice, which is the reason for this strict classification.
+>See the [OpenAlex documentation](https://developers.openalex.org/) for details
+>on their methodology.
+
+>[!TIP]
+>Wherever possible use the PubMed ID and not the doi to fetch items for your
+>libraries to populate the PMCID field, as this is a major factor for determining
+>OA status of entries that are not  diamond, gold, or hybrid.
 
 ## Requirements
 
